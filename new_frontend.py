@@ -1,28 +1,28 @@
 # This file is for the streamlit frontend
 
 # All imports
-from agents import *
-import streamlit as st
-from retrievers import *
 import os
+import sys
+import traceback
+import contextlib
+from io import StringIO
+from dotenv import load_dotenv
+import streamlit as st
 import statsmodels.api as sm
 from streamlit_feedback import streamlit_feedback
 from llama_index.core import Document
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.core import VectorStoreIndex
 from llama_index.core import Settings
-from io import StringIO
-import traceback
-import contextlib
-import sys
+from retrievers import *
+from agents import *
 import plotly as px
 import matplotlib.pyplot as plt
+
+load_dotenv()
+
 def reset_everything():
     st.cache_data.clear()
-
-
-
-
 
 # stores std output generated on the console to be shown to the user on streamlit app
 @contextlib.contextmanager
@@ -33,8 +33,9 @@ def stdoutIO(stdout=None):
     sys.stdout = stdout
     yield stdout
     sys.stdout = old
-
-# Markdown changes made to the sidebar
+    
+    
+# Markdown changes for the streamlit app
 st.markdown("""
 <style>
     [data-testid=stSidebar] {
@@ -51,39 +52,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
-# Load the agents into the system
-agent_names= [data_viz_agent,sk_learn_agent,statistical_analytics_agent,preprocessing_agent]
-# Configure the LLM to be ChatGPT-4o-mini
-# You can change this to use your particular choice of LLM
-dspy.configure(lm = dspy.OpenAI(model='gpt-4o-mini',api_key=os.environ['OPENAI_API_KEY'], max_tokens=16384))
-
-# dspy.configure(lm =dspy.GROQ(model='llama3-70b-8192', api_key =os.environ.get("GROQ_API_KEY"),max_tokens=10000 ) )
-
-# sets the embedding model to be used as OpenAI default
-Settings.embed_model = OpenAIEmbedding(api_key=os.environ["OPENAI_API_KEY"])
-
-# Imports images
-st.image('./images/Auto-analysts icon small.png', width=70)
-st.title("Auto-Analyst")
-    
-
-# asthetic features for streamlit app
-st.logo('./images/Auto-analysts icon small.png')
-st.sidebar.title(":white[Auto-Analyst] ")
-st.sidebar.text("Have all your Data Science ")
-st.sidebar.text("Analysis Done!")
-
-# creates the file_uploader
-uploaded_file = st.file_uploader("Upload your file here...", on_change=reset_everything())
-st.write("You can upload your own data or use sample data by clicking the button below")
-# creates a button to use the sample data
-sample_data = st.button("Use Sample Data")
-if sample_data:
-
-    uploaded_file = "Housing.csv"
-
-# more markdown changes
 st.markdown(
     """
     <style>
@@ -97,16 +65,63 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-# displays the instructions for the user
+
+AGENT_NAMES =  [data_viz_agent,sk_learn_agent,statistical_analytics_agent,preprocessing_agent]
+
+# initializes some variables in the streamlit session state
+# messages used for storing query and agent responses
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+# thumbs used to store user feedback
+if "thumbs" not in st.session_state:
+    st.session_state.thumbs = ''
+#stores df
+if "df" not in st.session_state:
+    st.session_state.df = None
+#stores short-term memory
+if "st_memory" not in st.session_state:
+    st.session_state.st_memory = []
+if "configured_lm" not in st.session_state:
+    st.session_state.configured_lm = None
+
+
+def configure_lm(model="gpt-4o-mini", api_key=os.environ['OPENAI_API_KEY']):
+    """Configures the OpenAI model and returns the model object"""
+    dspy.configure(
+        lm = dspy.OpenAI(model='gpt-4o-mini',
+            api_key=os.environ['OPENAI_API_KEY'], 
+            max_tokens=16384)
+     )
+    Settings.embed_model = OpenAIEmbedding(api_key=os.environ["OPENAI_API_KEY"])
+
+
+# Imports images
+st.image('./images/Auto-analysts icon small.png', width=70)
+st.title("Auto-Analyst")
+    
+
+# asthetic features for streamlit app
+st.logo('./images/Auto-analysts icon small.png')
+st.sidebar.title(":white[Auto-Analyst] ")
+st.sidebar.text("Have all your Data Science ")
+st.sidebar.text("Analysis Done!")
+
+def upload_file():
+    uploaded_file = st.file_uploader("Upload your file here...", on_change=reset_everything())
+    st.write("You can upload your own data or use sample data by clicking the button below")
+    # Creates a button to use the sample data
+    sample_data = st.button("Use Sample Data")
+    if sample_data:
+        uploaded_file = "Housing.csv"
+    return uploaded_file, sample_data
+        
+# Displays the instructions for the user
 st.markdown(instructions)
 
-
 retrievers = {}
-# df = pd.read_csv('open_deals_min2.csv')
-#initializes the uploaded_df or sample df into a dataframe
-# also caches that data for performance
+# Initializes the uploaded_df or sample df into a dataframe & also caches that data for performance
 @st.cache_data
-def initialize_data(button_pressed=False):
+def initialize_data(uploaded_file, button_pressed=False):
     if button_pressed==False:
         uploaded_df = pd.read_csv(uploaded_file, parse_dates=True)
     else:
@@ -114,40 +129,36 @@ def initialize_data(button_pressed=False):
         st.write("LOADED")
     return uploaded_df
 
-
-#initializes the planner based system
+# Initializes the planner based system
 @st.cache_resource
 def intialize_agent():
+    return auto_analyst(agents=AGENT_NAMES,retrievers=retrievers)
 
-    return auto_analyst(agents=agent_names,retrievers=retrievers)
-
-#intializes the independent components
+# Intializes the independent components
 @st.cache_resource
 def initial_agent_ind():
-    return auto_analyst_ind(agents=agent_names,retrievers=retrievers)
+    return auto_analyst_ind(agents=AGENT_NAMES,retrievers=retrievers)
 
-#initializes the two retrievers one for data, the other for styling to be used by visualization agent
+# Initializes the two retrievers one for data, the other for styling to be used by visualization agent
 @st.cache_data(hash_funcs={StringIO: StringIO.getvalue})
 def initiatlize_retrievers(_styling_instructions, _doc):
-    retrievers ={}
     style_index =  VectorStoreIndex.from_documents([Document(text=x) for x in _styling_instructions])
     retrievers['style_index'] = style_index
     retrievers['dataframe_index'] =  VectorStoreIndex.from_documents([Document(text=x) for x in _doc])
 
     return retrievers
     
-# a simple function to save the output 
+# A simple function to save the output 
 def save():
-    filename = 'output2.txt'
+    filename = 'logs.txt'
     outfile = open(filename, 'a')
     
     outfile.writelines([str(i)+'\n' for i in st.session_state.messages])
     outfile.close()
 
-
 # Defines how the chat system works
 def run_chat():
-    # defines a variable df (agent code often refers to the dataframe as that)
+    # Defines a variable df (agent code often refers to the dataframe as that)
     if 'df' in st.session_state:
         df = st.session_state['df']
         if df is not None:
@@ -171,7 +182,6 @@ def run_chat():
     if user_input:
         st.session_state.show_placeholder = False
 
-
     # If user has given input or query
     if user_input:
         # this chunk displays previous interactions
@@ -180,27 +190,18 @@ def run_chat():
                 if '-------------------------' not in m:
                     st.write(m.replace('#','######'))
 
-
-
-
-
-
         st.session_state.messages.append('\n------------------------------------------------NEW QUERY------------------------------------------------\n')
         st.session_state.messages.append(f"User: {user_input}")
         
-        #all the agents the user mentioned by name to be stored in this list
+        # All the agents the user mentioned by name to be stored in this list
         specified_agents = []
-        # checks for each agent if it is mentioned in the query
-        for a in agent_names: 
+        # Checks for each agent if it is mentioned in the query
+        for a in AGENT_NAMES: 
             if a.__pydantic_core_schema__['schema']['model_name'] in user_input.lower():
                 specified_agents.insert(0,a.__pydantic_core_schema__['schema']['model_name'])
 
-    # this is triggered when user did not mention any of the agents in the query
-    # this is the planner based routing
+    # This is triggered when user did not mention any of the agents in the query; a planner based routing
         if specified_agents==[]:
-
-
-
             # Generate response in a chat message object
             with st.chat_message("Auto-Anlyst Bot",avatar="🚀"):
                 st.write("Responding to "+ user_input)
@@ -212,16 +213,11 @@ def run_chat():
                 
                 # Tries to execute the code and display the output generated from the console
                 try:
-                    
                     with stdoutIO() as s:
                         exec(execution)
-                       
                     st.write(s.getvalue().replace('#','########'))
-
-                    
                 # If code generates an error (testing code fixing agent will be added here)
                 except:
-
                     e = traceback.format_exc()
                     st.markdown("The code is giving an error on excution "+str(e)[:1500])
                     st.write("Please help the code fix agent with human understanding")
@@ -241,107 +237,86 @@ def run_chat():
                         execution = output[spec_agent].code.split('```')[1].replace('#','####').replace('python','').replace('fig.show()','st.plotly_chart(fig)')
                     else:
                         execution = output[spec_agent].code.split('```')[0].replace('#','####').replace('python','').replace('fig.show()','st.plotly_chart(fig)')
-
-
                     # does the code execution and displays it to the user
                     try:
-                        
                         with stdoutIO() as s:
                             exec(execution)
-                    
-
-                        st.write(s.getvalue().replace('#','########'))
-
-
-                        
+                        st.write(s.getvalue().replace('#','########'))                        
                 # If code generates an error (testing code fixing agent will be added here)
-
                     except:
-
                         e = traceback.format_exc()
                         st.markdown("The code is giving an error on excution "+str(e)[:1500])
                         st.write("Please help the code fix agent with human understanding")
                         user_given_context = st.text_input("Help give additional context to guide the agent to fix the code", key='user_given_context')
                         st.session_state.messages.append(user_given_context)
-
-
-# simple feedback form to capture the user's feedback on the answers
+        
+        # Simple feedback form to capture the user's feedback on the answers
         with st.form('form'):
             streamlit_feedback(feedback_type="thumbs", optional_text_label="Do you like the response?", align="flex-start")
 
             st.session_state.messages.append('\n---------------------------------------------------------------------------------------------------------\n')
             st.form_submit_button('Save feedback',on_click=save())
 
-
-
-
-
-
-# initializes some variables in the streamlit session state
-# messages used for storing query and agent responses
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-# thumbs used to store user feedback
-if "thumbs" not in st.session_state:
-    st.session_state.thumbs = ''
-#stores df
-if "df" not in st.session_state:
-    st.session_state.df = None
-#stores short-term memory
-if "st_memory" not in st.session_state:
-    st.session_state.st_memory = []
-
-# if user has uploaded a file or used our sample data
-if uploaded_file or sample_data:
-    # intializes the dataframe
-    st.session_state['df'] = initialize_data()
-    
-    st.write(st.session_state['df'].head())
-    # if user asked for sample data
+# Function to handle file upload or sample data selection
+def handle_file_upload_or_sample(sample_data, uploaded_file):
     if sample_data:
         desc = "Housing Dataset"
-        doc=[str(make_data(st.session_state['df'],desc))]
-    # if user uploaded their own data
+        doc = [str(make_data(st.session_state['df'], desc))]
     else:
-        # They give a small description so the LLM/Agent can be given additional context
         desc = st.text_input("Write a description for the uploaded dataset")
-        doc=['']
+        doc = ['']
         if st.button("Start The Analysis"):
-
-            dict_ = make_data(st.session_state['df'],desc)
+            dict_ = make_data(st.session_state['df'], desc)
             doc = [str(dict_)]
+    return doc
 
-# this initializes the retrievers 
-    if doc[0]!='':
-        retrievers = initiatlize_retrievers(styling_instructions,doc)
-        
+# Function to initialize retrievers
+def initialize_retrievers_and_agents(doc):
+    if doc[0] != '':
+        retrievers = initiatlize_retrievers(styling_instructions, doc)
         st.success('Document Uploaded Successfully!')
         st.session_state['agent_system_chat'] = intialize_agent()
         st.session_state['agent_system_chat_ind'] = initial_agent_ind()
         st.write("Begin")
+
+# Function to save user feedback
+def save_feedback():
+    if st.session_state['thumbs'] != '':
+        filename = 'output2.txt'
+        with open(filename, 'a', encoding="utf-8") as outfile:
+            outfile.write(str(st.session_state.thumbs) + '\n')
+            outfile.write('\n------------------------------------------------END QUERY------------------------------------------------\n')
+        st.session_state['thumbs'] = ''
+        st.write("Saved your Feedback")
+
+# Function to manage short-term memory
+def manage_short_term_memory():
+    if len(st.session_state.st_memory) > 10:
+        st.session_state.st_memory = st.session_state.st_memory[:10]
+
+# Main function that runs the app
+def run_app():
+    if st.session_state.configured_lm is None:
+        configure_lm()
+    uploaded_file, sample_data = upload_file()
+    if uploaded_file or sample_data:
+        # Initialize the dataframe
+        st.session_state['df'] = initialize_data(uploaded_file)
+        
+        # Handle file upload or sample data
+        doc = handle_file_upload_or_sample(sample_data, uploaded_file)
+        
+        # Initialize retrievers and agents
+        initialize_retrievers_and_agents(doc)
     
-
-
-
-# saves user feedback if given
-if st.session_state['thumbs']!='':
-    filename = 'output2.txt'
-    outfile = open(filename, 'a',encoding="utf-8")
+    # Save user feedback
+    save_feedback()
     
-    outfile.write(str(st.session_state.thumbs)+'\n')
-    outfile.write('\n------------------------------------------------END QUERY------------------------------------------------\n')
+    # Run the chat interface
+    run_chat()
+    
+    # Manage short-term memory
+    manage_short_term_memory()
 
-    outfile.close()
-    st.session_state['thumbs']=''
-    st.write("Saved your Feedback")
-
-
-
-
-
-run_chat()
-
-#shortens the short-term memory to only include previous 10 interactions
-if len(st.session_state.st_memory)>10:
-    st.session_state.st_memory = st.session_state.st_memory[:10]
-
+# Run the app
+run_app()
